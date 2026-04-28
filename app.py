@@ -20,7 +20,7 @@ from google import genai
 load_dotenv()
 # client = genai.Client(api_key=os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", ""))
 client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
-MODEL  = "mistral-small"
+MODEL  = "mistral-small-latest"  # use this exact model string
 
 st.set_page_config(
     page_title="AI Business Analyst",
@@ -85,17 +85,27 @@ st.markdown("""
 # CORE HELPERS
 # ============================================================
 
+# @st.cache_data(ttl=600, show_spinner=False)
+# def ask_gemini(prompt):
+#     # ttl=600 = cache result for 10 minutes
+#     # Same prompt = returned instantly without API call
+#     # Reduces API calls by 80% — fixes quota exhausted error
+#     try:
+#         response = client.models.generate_content(
+#             model=MODEL,
+#             contents=prompt
+#         )
+#         return response.text
+#     except Exception as e:
+#         return f"AI temporarily unavailable: {str(e)}"
 @st.cache_data(ttl=600, show_spinner=False)
-def ask_gemini(prompt):
-    # ttl=600 = cache result for 10 minutes
-    # Same prompt = returned instantly without API call
-    # Reduces API calls by 80% — fixes quota exhausted error
+def ask_mistral(prompt):
     try:
-        response = client.models.generate_content(
+        response = client.chat.complete(
             model=MODEL,
-            contents=prompt
+            messages=[{"role": "user", "content": prompt}]
         )
-        return response.text
+        return response.choices[0].message.content
     except Exception as e:
         return f"AI temporarily unavailable: {str(e)}"
 
