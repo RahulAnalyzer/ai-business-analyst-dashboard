@@ -20,7 +20,7 @@ load_dotenv()
 # client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key)
-MODEL  = "gemini-2.5-flash"
+MODEL  = "gemini-2.0-flash"
 
 st.set_page_config(
     page_title="AI Business Analyst",
