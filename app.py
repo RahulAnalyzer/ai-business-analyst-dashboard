@@ -13,14 +13,12 @@ import pandas as pd
 import plotly.express as px
 from dotenv import load_dotenv
 import os
-from mistralai import Mistral
-from google import genai
+from mistralai import Mistral                                  # FIX 1: correct import
 
 # ── SETUP ──────────────────────────────────────────────────
 load_dotenv()
-# client = genai.Client(api_key=os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", ""))
-client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
-MODEL  = "mistral-small-latest"  # use this exact model string
+client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))        # FIX 2: correct client
+MODEL  = "mistral-small-latest"                               # FIX 3: correct model string
 
 st.set_page_config(
     page_title="AI Business Analyst",
@@ -85,21 +83,11 @@ st.markdown("""
 # CORE HELPERS
 # ============================================================
 
-# @st.cache_data(ttl=600, show_spinner=False)
-# def ask_gemini(prompt):
-#     # ttl=600 = cache result for 10 minutes
-#     # Same prompt = returned instantly without API call
-#     # Reduces API calls by 80% — fixes quota exhausted error
-#     try:
-#         response = client.models.generate_content(
-#             model=MODEL,
-#             contents=prompt
-#         )
-#         return response.text
-#     except Exception as e:
-#         return f"AI temporarily unavailable: {str(e)}"
 @st.cache_data(ttl=600, show_spinner=False)
-def ask_mistral(prompt):
+def ask_mistral(prompt):                                       # FIX 4: renamed + correct API call
+    # ttl=600 = cache result for 10 minutes
+    # Same prompt = returned instantly without API call
+    # Reduces API calls by 80% — fixes quota exhausted error
     try:
         response = client.chat.complete(
             model=MODEL,
@@ -196,7 +184,7 @@ def generate_kpi_cards(df):
 def generate_ai_summary(df):
     st.markdown('<p class="section-title">🤖 AI Executive Summary</p>',
                 unsafe_allow_html=True)
-    with st.spinner("Gemini AI is analyzing your data..."):
+    with st.spinner("Mistral AI is analyzing your data..."):
         prompt = f"""
         You are a senior data analyst presenting to leadership of an Indian retail company.
 
@@ -213,7 +201,7 @@ def generate_ai_summary(df):
         Flowing paragraph. Mention actual names. Under 120 words.
         """
         st.markdown(
-            f'<div class="insight-box">{ask_gemini(prompt)}</div>',
+            f'<div class="insight-box">{ask_mistral(prompt)}</div>',  # FIX 5a
             unsafe_allow_html=True
         )
 
@@ -236,7 +224,7 @@ def show_charts(df):
         st.plotly_chart(fig1, use_container_width=True)
         top_r = region_data.loc[region_data['Sales'].idxmax(), 'Region']
         low_r = region_data.loc[region_data['Profit'].idxmin(), 'Region']
-        st.caption("🤖 " + ask_gemini(
+        st.caption("🤖 " + ask_mistral(                               # FIX 5b
             f"One sentence for a manager: top sales region is {top_r} "
             f"but lowest profit region is {low_r}. Under 35 words."
         ))
@@ -295,10 +283,10 @@ def show_charts(df):
 #   1. User types a question OR clicks a suggestion button
 #   2. We compute fresh stats from the dataframe using Pandas
 #   3. We build a detailed prompt: question + all the data stats
-#   4. Gemini reads the data and writes a business answer
+#   4. Mistral reads the data and writes a business answer
 #   5. We detect what type of chart fits the answer
 #   6. We auto-generate the chart using Plotly
-#   7. We ask Gemini for 3 follow-up question suggestions
+#   7. We ask Mistral for 3 follow-up question suggestions
 #   8. We save everything to session_state (chat history)
 #   9. We display the full conversation on screen
 #
@@ -507,7 +495,7 @@ def compute_question_data(question, df):
 
 def generate_followup_questions(question, answer):
     """
-    Asks Gemini to suggest 3 natural follow-up questions.
+    Asks Mistral to suggest 3 natural follow-up questions.
 
     WHY THIS FEATURE:
     Follow-up suggestions guide the user to explore more data
@@ -516,7 +504,7 @@ def generate_followup_questions(question, answer):
     feel like a complete product, not a student project.
 
     TECHNIQUE — asking AI to return structured data:
-    We ask Gemini to return ONLY a numbered list with no extra text.
+    We ask Mistral to return ONLY a numbered list with no extra text.
     Then we parse the response by splitting on newlines.
     This is a simple form of structured AI output.
     """
@@ -531,7 +519,7 @@ def generate_followup_questions(question, answer):
     - About sales, profit, region, category, segment, or trends
     - No explanations, no extra text — just the 3 numbered questions
     """
-    raw = ask_gemini(prompt)
+    raw = ask_mistral(prompt)                                  # FIX 5c
 
     # Parse the numbered list into a Python list
     # splitlines() splits text by line breaks
@@ -642,7 +630,7 @@ def ai_chat_section(df):
             )
 
             # Step 3: Build the AI prompt
-            # We give Gemini:
+            # We give Mistral:
             #   - its role
             #   - the full dataset summary
             #   - the specific computed stats for this question
@@ -670,7 +658,7 @@ def ai_chat_section(df):
             - Be specific: use actual names from the data
             """
 
-            ai_answer = ask_gemini(prompt)
+            ai_answer = ask_mistral(prompt)                    # FIX 5d
 
             # Step 4: Generate the supporting chart
             chart = generate_answer_chart(active_question, result_df)
@@ -824,7 +812,7 @@ def main():
 
     st.markdown("---")
     st.caption(
-        "Built with Streamlit · Pandas · Plotly · Google Gemini 2.5 Flash"
+        "Built with Streamlit · Pandas · Plotly · Mistral AI"  # FIX 6
     )
 
 
