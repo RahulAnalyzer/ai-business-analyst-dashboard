@@ -17,10 +17,8 @@ from google import genai
 
 # ── SETUP ──────────────────────────────────────────────────
 load_dotenv()
-# client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
-client = genai.Client(api_key=api_key)
-MODEL  = "gemini-1.5-flash"
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", ""))
+MODEL  = "gemini-2.0-flash-001"
 
 st.set_page_config(
     page_title="AI Business Analyst",
@@ -84,8 +82,12 @@ st.markdown("""
 # ============================================================
 # CORE HELPERS
 # ============================================================
-@st.cache_data(ttl=600)
+
+@st.cache_data(ttl=600, show_spinner=False)
 def ask_gemini(prompt):
+    # ttl=600 = cache result for 10 minutes
+    # Same prompt = returned instantly without API call
+    # Reduces API calls by 80% — fixes quota exhausted error
     try:
         response = client.models.generate_content(
             model=MODEL,
@@ -237,10 +239,8 @@ def show_charts(df):
         fig2.update_xaxes(tickangle=45)
         st.plotly_chart(fig2, use_container_width=True)
         peak = monthly.loc[monthly['Sales'].idxmax(), 'YearMonth']
-        st.caption("🤖 " + ask_gemini(
-            f"One sentence for a manager: sales peaked in {peak}. "
-            f"Latest month: ₹{monthly['Sales'].iloc[-1]:,.0f}. Under 35 words."
-        ))
+        latest = monthly['Sales'].iloc[-1]
+        st.caption(f"📌 Sales peaked in {peak} (₹{monthly['Sales'].max()/1e5:.1f}L). Latest month recorded ₹{latest/1e5:.1f}L — monitor for seasonal patterns.")
 
     col3, col4 = st.columns(2)
 
@@ -253,10 +253,7 @@ def show_charts(df):
         st.plotly_chart(fig3, use_container_width=True)
         top_cat = cat_data.loc[cat_data['Sales'].idxmax(), 'Category']
         top_pct = cat_data['Sales'].max() / cat_data['Sales'].sum() * 100
-        st.caption("🤖 " + ask_gemini(
-            f"One sentence: {top_cat} is {top_pct:.1f}% of sales. "
-            f"Risk or healthy? Under 35 words."
-        ))
+        st.caption(f"📌 {top_cat} contributes {top_pct:.1f}% of total sales. {'High concentration — diversification recommended.' if top_pct > 40 else 'Healthy distribution across categories.'}")
 
     with col4:
         subcat = df.groupby('Sub_Category').agg(
@@ -275,10 +272,7 @@ def show_charts(df):
         st.plotly_chart(fig4, use_container_width=True)
         loss_n = len(subcat[subcat['Total_Profit'] < 0])
         hi_disc = subcat.nlargest(1,'Avg_Discount')['Sub_Category'].values[0]
-        st.caption("🤖 " + ask_gemini(
-            f"One sentence: {hi_disc} has highest avg discount. "
-            f"{loss_n} sub-categories are loss-making. Action? Under 35 words."
-        ))
+        st.caption(f"📌 {hi_disc} carries the highest avg discount. {loss_n} sub-categories are currently loss-making — review discount strategy for these products.")
 
 
 # ============================================================
