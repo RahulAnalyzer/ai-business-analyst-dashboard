@@ -13,12 +13,14 @@ import pandas as pd
 import plotly.express as px
 from dotenv import load_dotenv
 import os
+from mistralai import Mistral
 from google import genai
 
 # ── SETUP ──────────────────────────────────────────────────
 load_dotenv()
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", ""))
-MODEL  = "gemini-2.0-flash-001"
+# client = genai.Client(api_key=os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", ""))
+client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
+MODEL  = "mistral-small"
 
 st.set_page_config(
     page_title="AI Business Analyst",
