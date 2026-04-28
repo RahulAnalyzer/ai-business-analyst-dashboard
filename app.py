@@ -20,7 +20,7 @@ load_dotenv()
 # client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
 client = genai.Client(api_key=api_key)
-MODEL  = "gemini-2.0-flash"
+MODEL  = "gemini-1.5-flash"
 
 st.set_page_config(
     page_title="AI Business Analyst",
@@ -84,7 +84,7 @@ st.markdown("""
 # ============================================================
 # CORE HELPERS
 # ============================================================
-
+@st.cache_data(ttl=600)
 def ask_gemini(prompt):
     try:
         response = client.models.generate_content(
