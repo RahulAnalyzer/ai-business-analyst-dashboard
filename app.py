@@ -1,13 +1,13 @@
 # ============================================================
-# AI BUSINESS ANALYST DASHBOARD — FULLY GENERIC VERSION
-# Works on ANY CSV dataset — no hardcoded column names
+# AI DATA ANALYST DASHBOARD — FULLY GENERIC VERSION
+# Works on ANY CSV file — no hardcoded column names
+# AI powered by Groq (free, 14,400 req/day, no credit card)
 #
-# HOW IT WORKS:
-#   1. User uploads any CSV
-#   2. We auto-detect column types (numbers, categories, dates)
-#   3. Gemini reads column names + samples to understand context
-#   4. KPIs, charts, and AI insights are built dynamically
-#   5. Chat answers questions about whatever data is uploaded
+# HOW GENERIC MODE WORKS:
+#   1. Upload any CSV
+#   2. Auto-detect numeric / categorical / date columns
+#   3. Build KPIs, charts, filters from whatever columns exist
+#   4. AI understands the data context and answers questions
 # ============================================================
 
 import streamlit as st
@@ -40,10 +40,10 @@ st.markdown("""
         margin: 0.5rem 0 1rem 0;
         font-size: 0.93rem;
         color: #166534;
-        line-height: 1.75;
+        line-height: 1.8;
     }
     .section-title {
-        font-size: 1.15rem;
+        font-size: 1.1rem;
         font-weight: 600;
         color: #1f2937;
         padding-bottom: 0.4rem;
@@ -68,94 +68,99 @@ st.markdown("""
         margin: 0.5rem 0;
         font-size: 0.92rem;
         color: #1f2937;
-        line-height: 1.75;
+        line-height: 1.8;
     }
-    .col-badge {
-        display: inline-block;
-        font-size: 11px;
-        padding: 2px 8px;
-        border-radius: 999px;
-        margin: 2px;
-        font-weight: 500;
+    .kpi-note {
+        font-size: 0.75rem;
+        color: #9ca3af;
+        margin-top: 2px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ============================================================
-# CORE AI FUNCTION WITH CACHING
-# @st.cache_data means: same prompt = cached result (no API call)
-# This saves quota — critical for free tier
+# GROQ AI CALL — with caching to save quota
+# @st.cache_data: same prompt → returns cached result instantly
+# ttl=600 = cache expires after 10 minutes
 # ============================================================
 @st.cache_data(ttl=600, show_spinner=False)
-def ask_gemini(prompt):
+def ask_ai(prompt):
+    """
+    Calls Groq LLaMA model and returns response text.
+    Cached so the same prompt never hits the API twice.
+    """
     try:
         response = client.chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=500
+            max_tokens=400,
+            temperature=0.3   # lower = more consistent, factual responses
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"AI temporarily unavailable: {str(e)}"
+        return f"AI unavailable: {str(e)}"
 
 
 # ============================================================
-# COLUMN DETECTION — THE HEART OF GENERIC MODE
+# COLUMN TYPE DETECTION — the core of generic mode
 #
-# This function scans every column and classifies it as:
-#   - numeric    → numbers (Sales, Age, Score, Price...)
-#   - categorical → text with few unique values (Region, Status...)
-#   - datetime   → dates (Order_Date, Created_At...)
-#   - text       → free text (Name, Description...) — skip for charts
+# We scan every column and classify it into one of 4 types:
+#   numeric     → float/int columns  (Sales, Age, Score...)
+#   categorical → text with few unique values (Region, Status...)
+#   datetime    → date/time columns  (Order_Date, Created_At...)
+#   text        → free text (Name, Description...) — skip for charts
 #
-# WHY WE NEED THIS:
-# Every dataset has different column names.
-# Instead of assuming "Sales" or "Region" exist,
-# we detect what's available and build analysis from that.
+# KEY FIX from previous version:
+#   We try date parsing STRICTLY — only columns where MOST values
+#   parse successfully are marked as dates. This prevents columns
+#   like "Product Name" from being misclassified as dates.
 # ============================================================
 def detect_columns(df):
-    """
-    Auto-detects column types in any DataFrame.
-    Returns a dict with lists of column names by type.
-    """
     cols = {
-        'numeric'     : [],   # number columns → KPIs, y-axis of charts
-        'categorical' : [],   # text with <30 unique values → filters, x-axis
-        'datetime'    : [],   # date columns → trend charts
-        'text'        : [],   # high-cardinality text → skip (names, IDs)
+        'numeric'    : [],
+        'categorical': [],
+        'datetime'   : [],
+        'text'       : [],
     }
 
     for col in df.columns:
+        series = df[col].dropna()
 
-        # ── DATE DETECTION ──
-        # First check if it's already a datetime type
+        if len(series) == 0:
+            continue
+
+        # 1. Already datetime type → date
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             cols['datetime'].append(col)
             continue
 
-        # Also try converting object columns to datetime
-        # Some CSVs store dates as text like "2021-01-15"
-        if df[col].dtype == object:
-            try:
-                pd.to_datetime(df[col], infer_datetime_format=True)
-                cols['datetime'].append(col)
-                continue
-            except:
-                pass
-
-        # ── NUMERIC DETECTION ──
+        # 2. Numeric type → numeric
         if pd.api.types.is_numeric_dtype(df[col]):
             cols['numeric'].append(col)
             continue
 
-        # ── CATEGORICAL vs TEXT DETECTION ──
-        # If a text column has fewer than 30 unique values,
-        # it's probably a category (Region, Status, Department)
-        # If it has many unique values, it's free text (Name, ID)
+        # 3. Object column — figure out what it really is
         if df[col].dtype == object:
-            unique_count = df[col].nunique()
-            if unique_count <= 30:
+
+            # Try date parsing — only accept if 80%+ of values parse
+            # This prevents false positives like "North" being a date
+            try:
+                parsed = pd.to_datetime(series, infer_datetime_format=True, errors='coerce')
+                success_rate = parsed.notna().mean()
+                if success_rate >= 0.8:
+                    cols['datetime'].append(col)
+                    continue
+            except:
+                pass
+
+            # Categorical: text with 30 or fewer unique values
+            unique_count = series.nunique()
+            ratio = unique_count / len(series)  # uniqueness ratio
+
+            # Low ratio = many repeats = categorical (Region, Status, Category)
+            # High ratio = mostly unique = text (Name, ID, Description)
+            if unique_count <= 50 and ratio < 0.5:
                 cols['categorical'].append(col)
             else:
                 cols['text'].append(col)
@@ -164,123 +169,113 @@ def detect_columns(df):
 
 
 # ============================================================
-# DATA LOADING — with auto date conversion
+# LOAD DATA — reads any CSV, auto-converts date columns
 # ============================================================
 def load_data(uploaded_file):
-    """
-    Reads any CSV and auto-converts date columns to datetime.
-
-    GENERIC APPROACH:
-    We don't know which column is the date in advance.
-    So we try converting every object column to datetime.
-    If it works → mark it as datetime.
-    If it fails → leave it as text.
-    """
     df = pd.read_csv(uploaded_file)
 
-    # Try to auto-convert any column that looks like a date
+    # Auto-convert columns that look like dates
+    # We use errors='coerce' so invalid dates become NaT, not errors
     for col in df.columns:
         if df[col].dtype == object:
             try:
-                converted = pd.to_datetime(df[col], infer_datetime_format=True)
-                df[col] = converted
+                parsed = pd.to_datetime(
+                    df[col], infer_datetime_format=True, errors='coerce'
+                )
+                # Only convert if 80%+ of values successfully parsed
+                if parsed.notna().mean() >= 0.8:
+                    df[col] = parsed
             except:
-                pass  # not a date column, leave as-is
+                pass
 
     return df
 
 
 # ============================================================
-# DATA PROFILE — text summary sent to Gemini as context
-#
-# GENERIC VERSION:
-# Instead of hardcoding which columns to summarize,
-# we dynamically summarize whatever columns exist.
+# DATA PROFILE — text description passed to AI as context
+# AI cannot see the CSV directly — we describe it in words
 # ============================================================
 def get_data_profile(df, col_types):
-    """
-    Builds a comprehensive text profile of any dataset.
-    This is passed to Gemini so it understands the data context.
-    """
     lines = []
-    lines.append(f"Dataset shape: {len(df):,} rows × {len(df.columns)} columns")
-    lines.append(f"Columns: {', '.join(df.columns.tolist())}")
+    lines.append(f"Rows: {len(df):,} | Columns: {len(df.columns)}")
+    lines.append(f"All columns: {', '.join(df.columns.tolist())}")
 
-    # Date range (if any date columns exist)
     if col_types['datetime']:
-        date_col = col_types['datetime'][0]
-        lines.append(f"Date range: {df[date_col].min()} to {df[date_col].max()}")
+        dc = col_types['datetime'][0]
+        try:
+            lines.append(f"Date range ({dc}): {df[dc].min().date()} to {df[dc].max().date()}")
+        except:
+            pass
 
-    # Numeric column stats
     if col_types['numeric']:
-        lines.append("\nNUMERIC COLUMNS SUMMARY:")
-        for col in col_types['numeric'][:6]:  # max 6 to keep prompt short
+        lines.append("\nNUMERIC COLUMNS:")
+        for c in col_types['numeric'][:6]:
             lines.append(
-                f"  {col}: min={df[col].min():,.1f}, "
-                f"max={df[col].max():,.1f}, "
-                f"mean={df[col].mean():,.1f}, "
-                f"sum={df[col].sum():,.1f}"
+                f"  {c}: total={df[c].sum():,.1f}, "
+                f"avg={df[c].mean():,.1f}, "
+                f"min={df[c].min():,.1f}, max={df[c].max():,.1f}"
             )
 
-    # Categorical column stats
     if col_types['categorical']:
-        lines.append("\nCATEGORY COLUMNS SUMMARY:")
-        for col in col_types['categorical'][:5]:  # max 5
-            top_val = df[col].value_counts().index[0]
-            unique_n = df[col].nunique()
-            lines.append(f"  {col}: {unique_n} unique values, most common = '{top_val}'")
+        lines.append("\nCATEGORY COLUMNS:")
+        for c in col_types['categorical'][:5]:
+            top = df[c].value_counts().index[0]
+            lines.append(f"  {c}: {df[c].nunique()} unique values, top='{top}'")
 
     return "\n".join(lines)
 
 
 # ============================================================
-# GENERIC KPI CARDS
-#
-# GENERIC APPROACH:
-# Show the top 4 numeric columns as KPI cards.
-# No assumption about which columns exist.
+# FORMAT LARGE NUMBERS — makes KPIs readable
+# ============================================================
+def format_number(val):
+    if abs(val) >= 1e7:
+        return f"{val/1e7:.2f} Cr"
+    elif abs(val) >= 1e5:
+        return f"{val/1e5:.1f} L"
+    elif abs(val) >= 1e3:
+        return f"{val/1e3:.1f} K"
+    else:
+        return f"{val:,.2f}"
+
+
+# ============================================================
+# KPI CARDS — top numeric columns shown as metric cards
+# GENERIC: shows whatever numeric columns exist (up to 4)
 # ============================================================
 def generate_kpi_cards(df, col_types):
     st.markdown('<p class="section-title">📈 Key Metrics</p>',
                 unsafe_allow_html=True)
 
     numeric_cols = col_types['numeric']
-
     if not numeric_cols:
         st.info("No numeric columns found in this dataset.")
         return
 
     # Show up to 4 numeric columns as KPI cards
-    display_cols = numeric_cols[:4]
-    cols = st.columns(len(display_cols))
+    show_cols = numeric_cols[:4]
+    cols      = st.columns(len(show_cols))
 
-    for i, col in enumerate(display_cols):
+    for i, col in enumerate(show_cols):
         total = df[col].sum()
         avg   = df[col].mean()
+        mx    = df[col].max()
         with cols[i]:
-            # Format large numbers nicely
-            if abs(total) >= 1e7:
-                formatted = f"{total/1e7:.2f} Cr"
-            elif abs(total) >= 1e5:
-                formatted = f"{total/1e5:.1f} L"
-            elif abs(total) >= 1e3:
-                formatted = f"{total/1e3:.1f} K"
-            else:
-                formatted = f"{total:,.2f}"
-
             st.metric(
                 label=f"Total {col}",
-                value=formatted,
-                help=f"Average: {avg:,.2f} | Min: {df[col].min():,.2f} | Max: {df[col].max():,.2f}"
+                value=format_number(total),
+                help=f"Avg: {avg:,.2f} | Max: {mx:,.2f}"
+            )
+            st.markdown(
+                f'<p class="kpi-note">Avg: {format_number(avg)} | '
+                f'Max: {format_number(mx)}</p>',
+                unsafe_allow_html=True
             )
 
 
 # ============================================================
-# GENERIC AI EXECUTIVE SUMMARY
-#
-# GENERIC APPROACH:
-# We pass the full data profile (whatever columns exist) to Gemini.
-# The AI figures out what kind of data it is and writes accordingly.
+# AI EXECUTIVE SUMMARY
+# Pandas computes all numbers → AI writes the narrative
 # ============================================================
 def generate_ai_summary(df, col_types):
     st.markdown('<p class="section-title">🤖 AI Executive Summary</p>',
@@ -288,36 +283,27 @@ def generate_ai_summary(df, col_types):
 
     with st.spinner("AI is analyzing your data..."):
         profile = get_data_profile(df, col_types)
+        sample  = df.head(3).to_string(index=False)
 
-        # Sample rows help the AI understand context better
-        sample = df.head(3).to_string(index=False)
+        prompt = f"""You are a senior data analyst. A user uploaded a CSV dataset.
 
-        prompt = f"""
-        You are a senior data analyst. A user has uploaded a dataset to you.
-        Analyze it and write a professional executive summary.
+DATASET PROFILE:
+{profile}
 
-        DATASET PROFILE:
-        {profile}
+SAMPLE DATA (first 3 rows):
+{sample}
 
-        SAMPLE ROWS (first 3):
-        {sample}
+Write a professional executive summary in 4-5 sentences:
+1. Identify what type of data this is
+2. State the most important top-line finding with actual numbers
+3. Highlight one strong performer by name
+4. Flag one concern or pattern worth investigating
+5. Give one specific actionable recommendation
 
-        Write a 4-5 sentence executive summary that:
-        1. First identifies what type of data this is (sales, HR, finance, etc.)
-        2. States the most important top-line finding (biggest number, key trend)
-        3. Highlights one strong performer (top category, region, product etc.)
-        4. Flags one concern or anomaly worth investigating
-        5. Ends with one specific actionable recommendation
+Rules: Flowing paragraph, NO bullet points. Under 120 words.
+Be specific — use actual column names and values from the data."""
 
-        Rules:
-        - Write in flowing paragraph form — NO bullet points
-        - Be specific: use actual column names and values from the data
-        - Sound like a professional analyst presenting to leadership
-        - Under 130 words
-        - If numbers are large, use K/L/Cr format for Indian data or M/B for others
-        """
-
-        ai_text = ask_gemini(prompt)
+        ai_text = ask_ai(prompt)
         st.markdown(
             f'<div class="insight-box">{ai_text}</div>',
             unsafe_allow_html=True
@@ -325,51 +311,58 @@ def generate_ai_summary(df, col_types):
 
 
 # ============================================================
-# GENERIC CHARTS — 4 charts built from whatever columns exist
+# CHARTS — 4 business charts built dynamically
 #
-# CHART LOGIC:
-#   Chart 1: Best numeric col grouped by best categorical col → Bar
-#   Chart 2: Best numeric col over time → Line (if date exists)
-#             OR second categorical col → Bar (if no date)
-#   Chart 3: All numeric cols distribution → Pie/Donut of first cat col
-#   Chart 4: Two numeric cols → Scatter (if 2+ numeric exist)
-#             OR bar chart of second cat col
+# GENERIC LOGIC:
+#   Chart 1 → Primary numeric by primary category   (Bar)
+#   Chart 2 → Primary numeric over time             (Line)
+#             OR primary numeric by second category  (Bar)
+#   Chart 3 → Category share of primary numeric     (Donut)
+#   Chart 4 → Two numerics relationship             (Scatter)
+#             OR second numeric by category          (Bar)
+#
+# If a chart can't be built (column doesn't exist),
+# we show a helpful message instead of crashing.
 # ============================================================
 def show_charts(df, col_types):
     st.markdown('<p class="section-title">📊 Visual Analysis</p>',
                 unsafe_allow_html=True)
 
-    numeric_cols     = col_types['numeric']
-    categorical_cols = col_types['categorical']
-    datetime_cols    = col_types['datetime']
+    num_cols  = col_types['numeric']
+    cat_cols  = col_types['categorical']
+    date_cols = col_types['datetime']
 
-    if not numeric_cols:
-        st.warning("No numeric columns found — cannot generate charts.")
+    # Need at least one numeric column to show charts
+    if not num_cols:
+        st.warning("No numeric columns detected — cannot generate charts.")
         return
 
-    # Pick the best columns to visualize
-    # "Best" = the one with highest variance (most interesting to chart)
-    primary_num = numeric_cols[0]   # first numeric = main KPI
-    second_num  = numeric_cols[1] if len(numeric_cols) > 1 else None
-    primary_cat = categorical_cols[0] if categorical_cols else None
-    second_cat  = categorical_cols[1] if len(categorical_cols) > 1 else None
-    date_col    = datetime_cols[0] if datetime_cols else None
+    # Pick the best columns to use
+    # Strategy: use column with highest total value as primary metric
+    primary_num = max(num_cols, key=lambda c: df[c].sum()) \
+                  if num_cols else None
+    second_num  = [c for c in num_cols if c != primary_num][0] \
+                  if len(num_cols) > 1 else None
+    primary_cat = cat_cols[0] if cat_cols else None
+    second_cat  = cat_cols[1] if len(cat_cols) > 1 else None
+    date_col    = date_cols[0] if date_cols else None
 
+    # ── ROW 1 ──────────────────────────────────────────────
     col1, col2 = st.columns(2)
 
-    # ── CHART 1: Primary numeric grouped by primary category ──
     with col1:
-        if primary_cat:
-            # groupby the category and sum the main numeric column
-            chart_df = (
+        # CHART 1: Primary numeric by primary category — Bar Chart
+        # "Which category has the most?"
+        if primary_cat and primary_num:
+            agg = (
                 df.groupby(primary_cat)[primary_num]
                 .sum()
                 .reset_index()
                 .sort_values(primary_num, ascending=False)
-                .head(10)  # top 10 only so chart isn't crowded
+                .head(10)
             )
             fig = px.bar(
-                chart_df,
+                agg,
                 x=primary_cat,
                 y=primary_num,
                 color=primary_num,
@@ -377,54 +370,67 @@ def show_charts(df, col_types):
                 title=f'📊 {primary_num} by {primary_cat}',
                 text_auto='.2s'
             )
-            fig.update_layout(height=370, showlegend=False)
+            fig.update_layout(
+                height=380,
+                showlegend=False,
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
+            fig.update_xaxes(tickangle=30)
             st.plotly_chart(fig, use_container_width=True)
 
-            # Smart caption using Pandas (no AI call needed)
-            top_val = chart_df.loc[chart_df[primary_num].idxmax(), primary_cat]
-            top_num = chart_df[primary_num].max()
+            top_val = agg.loc[agg[primary_num].idxmax(), primary_cat]
+            top_num = agg[primary_num].max()
             st.caption(
-                f"📌 {top_val} leads with {primary_num} = "
-                f"{top_num:,.1f} — the highest in this category."
+                f"📌 **{top_val}** leads with {primary_num} = "
+                f"{format_number(top_num)}"
             )
-        else:
-            # No categorical column — show histogram of main numeric
+        elif primary_num:
+            # No categories — show histogram
             fig = px.histogram(
                 df, x=primary_num,
                 title=f'📊 Distribution of {primary_num}',
-                color_discrete_sequence=['#3b82f6']
+                color_discrete_sequence=['#3b82f6'],
+                nbins=20
             )
-            fig.update_layout(height=370)
+            fig.update_layout(height=380, plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Upload a CSV with numeric columns to see charts.")
 
-    # ── CHART 2: Trend over time OR second category ──
     with col2:
-        if date_col:
-            # Time series trend
-            df_copy = df.copy()
-            df_copy['_period'] = df_copy[date_col].dt.to_period('M').astype(str)
-            trend_df = (
-                df_copy.groupby('_period')[primary_num]
+        # CHART 2: Trend over time (Line) OR second category (Bar)
+        if date_col and primary_num:
+            # Line chart — trend over time
+            df_t = df.copy()
+            df_t['_period'] = df_t[date_col].dt.to_period('M').astype(str)
+            trend = (
+                df_t.groupby('_period')[primary_num]
                 .sum()
                 .reset_index()
             )
             fig = px.line(
-                trend_df,
+                trend,
                 x='_period',
                 y=primary_num,
-                title=f'📅 {primary_num} Over Time',
-                markers=True
+                title=f'📅 {primary_num} Trend Over Time',
+                markers=True,
+                color_discrete_sequence=['#6366f1']
             )
-            fig.update_layout(height=370)
+            fig.update_layout(
+                height=380,
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
             fig.update_xaxes(tickangle=45)
             st.plotly_chart(fig, use_container_width=True)
 
-            peak_period = trend_df.loc[trend_df[primary_num].idxmax(), '_period']
-            st.caption(f"📌 Peak {primary_num} was in {peak_period}.")
+            peak = trend.loc[trend[primary_num].idxmax(), '_period']
+            st.caption(f"📌 Peak {primary_num} occurred in **{peak}**")
 
-        elif second_cat:
-            # No date — use second categorical column instead
-            chart_df2 = (
+        elif second_cat and primary_num:
+            # No dates — use second categorical column
+            agg2 = (
                 df.groupby(second_cat)[primary_num]
                 .sum()
                 .reset_index()
@@ -432,7 +438,7 @@ def show_charts(df, col_types):
                 .head(10)
             )
             fig = px.bar(
-                chart_df2,
+                agg2,
                 x=second_cat,
                 y=primary_num,
                 color=primary_num,
@@ -440,73 +446,94 @@ def show_charts(df, col_types):
                 title=f'📊 {primary_num} by {second_cat}',
                 text_auto='.2s'
             )
-            fig.update_layout(height=370, showlegend=False)
+            fig.update_layout(
+                height=380,
+                showlegend=False,
+                plot_bgcolor='rgba(0,0,0,0)'
+            )
+            fig.update_xaxes(tickangle=30)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Add a date column for trend analysis.")
+            st.info(
+                "💡 Add a date column to your CSV to see trend charts here."
+            )
 
+    # ── ROW 2 ──────────────────────────────────────────────
     col3, col4 = st.columns(2)
 
-    # ── CHART 3: Category share (donut) ──
     with col3:
-        if primary_cat:
-            donut_df = (
+        # CHART 3: Category share — Donut
+        if primary_cat and primary_num:
+            donut = (
                 df.groupby(primary_cat)[primary_num]
                 .sum()
                 .reset_index()
                 .sort_values(primary_num, ascending=False)
-                .head(8)  # max 8 slices for readability
+                .head(8)   # max 8 slices for readability
             )
             fig = px.pie(
-                donut_df,
+                donut,
                 values=primary_num,
                 names=primary_cat,
                 title=f'🍩 {primary_num} Share by {primary_cat}',
                 hole=0.45,
                 color_discrete_sequence=px.colors.qualitative.Set2
             )
-            fig.update_layout(height=370)
+            fig.update_layout(
+                height=380,
+                paper_bgcolor='rgba(0,0,0,0)'
+            )
             st.plotly_chart(fig, use_container_width=True)
 
-            top_pct = donut_df[primary_num].max() / donut_df[primary_num].sum() * 100
-            top_cat = donut_df.loc[donut_df[primary_num].idxmax(), primary_cat]
+            top_pct = (
+                donut[primary_num].max()
+                / donut[primary_num].sum() * 100
+            )
+            top_cat = donut.loc[
+                donut[primary_num].idxmax(), primary_cat
+            ]
             st.caption(
-                f"📌 {top_cat} accounts for {top_pct:.1f}% of total {primary_num}. "
-                f"{'High concentration.' if top_pct > 40 else 'Fairly distributed.'}"
+                f"📌 **{top_cat}** holds {top_pct:.1f}% of total {primary_num}. "
+                f"{'High concentration — consider diversifying.' if top_pct > 45 else 'Relatively balanced.'}"
             )
         else:
-            st.info("Add a categorical column for share analysis.")
+            st.info("Add categorical columns to see share breakdown.")
 
-    # ── CHART 4: Scatter (two numerics) OR second cat bar ──
     with col4:
-        if second_num and primary_cat:
-            # Scatter: relationship between two numeric columns
-            scatter_df = (
-                df.groupby(primary_cat)
-                .agg(
-                    x_val=(primary_num, 'sum'),
-                    y_val=(second_num, 'sum')
-                )
-                .reset_index()
-            )
+        # CHART 4: Scatter (2 numerics) OR second category bar
+        if second_num and primary_cat and primary_num:
+            # Scatter — relationship between two metrics
+            scatter = df.groupby(primary_cat).agg(
+                x=(primary_num, 'sum'),
+                y=(second_num, 'sum')
+            ).reset_index()
+
             fig = px.scatter(
-                scatter_df,
-                x='x_val',
-                y='y_val',
+                scatter,
+                x='x',
+                y='y',
                 hover_name=primary_cat,
-                color='y_val',
+                color='y',
+                size='x',
                 color_continuous_scale='RdYlGn',
                 title=f'🔵 {primary_num} vs {second_num}',
-                labels={'x_val': primary_num, 'y_val': second_num}
+                labels={'x': primary_num, 'y': second_num}
             )
-            fig.update_layout(height=370, showlegend=False)
+            fig.update_layout(
+                height=380,
+                showlegend=False,
+                plot_bgcolor='rgba(0,0,0,0)'
+            )
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
-                f"📌 Each point = one {primary_cat}. "
-                f"Points in the top-right corner are highest in both {primary_num} and {second_num}."
+                f"📌 Each bubble = one {primary_cat}. "
+                f"Bigger = more {primary_num}. "
+                f"Greener = more {second_num}."
             )
-        elif second_cat:
-            chart_df3 = (
+
+        elif second_cat and primary_num:
+            # No second numeric — bar with second category
+            agg3 = (
                 df.groupby(second_cat)[primary_num]
                 .sum()
                 .reset_index()
@@ -514,7 +541,7 @@ def show_charts(df, col_types):
                 .head(10)
             )
             fig = px.bar(
-                chart_df3,
+                agg3,
                 x=second_cat,
                 y=primary_num,
                 color=primary_num,
@@ -522,174 +549,249 @@ def show_charts(df, col_types):
                 title=f'📊 {primary_num} by {second_cat}',
                 text_auto='.2s'
             )
-            fig.update_layout(height=370, showlegend=False)
+            fig.update_layout(
+                height=380,
+                showlegend=False,
+                plot_bgcolor='rgba(0,0,0,0)'
+            )
+            fig.update_xaxes(tickangle=30)
+            st.plotly_chart(fig, use_container_width=True)
+
+        elif second_num:
+            # Only numerics, no categories — histogram of second numeric
+            fig = px.histogram(
+                df, x=second_num,
+                title=f'Distribution of {second_num}',
+                color_discrete_sequence=['#8b5cf6'],
+                nbins=20
+            )
+            fig.update_layout(height=380, plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
         else:
-            # Fallback: histogram of second numeric
-            if second_num:
-                fig = px.histogram(df, x=second_num,
-                                   title=f'Distribution of {second_num}')
-                fig.update_layout(height=370)
-                st.plotly_chart(fig, use_container_width=True)
+            st.info(
+                "💡 Add more numeric or category columns to "
+                "unlock this chart."
+            )
 
 
 # ============================================================
-# GENERIC AI CHAT
-#
-# GENERIC APPROACH:
-# Instead of pre-computing region/category/segment stats,
-# we compute stats dynamically based on whatever columns exist.
-# The chat works on any dataset.
+# COLUMN EXPLORER — shows what was auto-detected
+# ============================================================
+def show_column_explorer(df, col_types):
+    with st.expander("🔍 What the app detected in your CSV"):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("**📊 Numeric columns**")
+            for c in col_types['numeric']:
+                st.markdown(f"- `{c}`")
+        with c2:
+            st.markdown("**🏷️ Category columns**")
+            for c in col_types['categorical']:
+                st.markdown(f"- `{c}`")
+        with c3:
+            st.markdown("**📅 Date columns**")
+            for c in col_types['datetime']:
+                st.markdown(f"- `{c}`")
+        if col_types['text']:
+            st.markdown(
+                f"**Skipped (high-cardinality text):** "
+                f"{', '.join([f'`{c}`' for c in col_types['text']])}"
+            )
+        st.dataframe(df.head(5), use_container_width=True)
+
+
+# ============================================================
+# AI CHAT SECTION
 # ============================================================
 def ai_chat_section(df, col_types):
     st.markdown('<p class="section-title">💬 Ask the AI Analyst</p>',
                 unsafe_allow_html=True)
 
-    numeric_cols     = col_types['numeric']
-    categorical_cols = col_types['categorical']
+    num_cols = col_types['numeric']
+    cat_cols = col_types['categorical']
 
-    # Auto-generate suggested questions based on actual columns
+    # Auto-generate suggested questions from actual column names
     suggestions = []
-    if numeric_cols and categorical_cols:
-        suggestions.append(f"Which {categorical_cols[0]} has highest {numeric_cols[0]}?")
-        suggestions.append(f"What is the average {numeric_cols[0]}?")
-    if len(categorical_cols) > 1:
-        suggestions.append(f"Compare {categorical_cols[0]} vs {categorical_cols[1]}")
-    if len(numeric_cols) > 1:
-        suggestions.append(f"Which {categorical_cols[0] if categorical_cols else 'group'} has best {numeric_cols[1]}?")
-    if col_types['datetime']:
+    if num_cols and cat_cols:
+        suggestions.append(
+            f"Which {cat_cols[0]} has the highest {num_cols[0]}?"
+        )
+    if len(num_cols) > 1 and cat_cols:
+        suggestions.append(
+            f"Which {cat_cols[0]} has the best {num_cols[1]}?"
+        )
+    if len(cat_cols) > 1 and num_cols:
+        suggestions.append(
+            f"Compare {cat_cols[0]} and {cat_cols[1]} by {num_cols[0]}"
+        )
+    if col_types['datetime'] and num_cols:
         suggestions.append("What is the trend over time?")
     suggestions.append("Give me the top 5 insights from this data")
+    suggestions.append("What are the biggest outliers or anomalies?")
 
-    if suggestions:
-        st.markdown("**Try asking:**")
-        cols = st.columns(min(len(suggestions), 3))
-        for i, s in enumerate(suggestions[:6]):
-            if cols[i % 3].button(s, key=f"sug_{i}", use_container_width=True):
-                st.session_state['pending_question'] = s
+    st.markdown("**💡 Try asking:**")
+    btn_cols = st.columns(3)
+    for i, s in enumerate(suggestions[:6]):
+        if btn_cols[i % 3].button(s, key=f"sug_{i}",
+                                   use_container_width=True):
+            st.session_state['pending_q'] = s
 
     st.markdown("---")
 
-    # Initialize session state
-    for key in ['chat_history', 'chart_history', 'followup_history', 'pending_question']:
+    # Session state init
+    for key, default in [
+        ('chat_history', []),
+        ('chart_history', []),
+        ('followup_history', []),
+        ('pending_q', None)
+    ]:
         if key not in st.session_state:
-            st.session_state[key] = [] if key != 'pending_question' else None
+            st.session_state[key] = default
 
-    typed_question = st.chat_input("Ask anything about your data...")
+    typed = st.chat_input("Ask anything about your data...")
 
-    active_question = None
-    if typed_question:
-        active_question = typed_question
-        st.session_state['pending_question'] = None
-    elif st.session_state.get('pending_question'):
-        active_question = st.session_state['pending_question']
-        st.session_state['pending_question'] = None
+    # Determine active question
+    active_q = None
+    if typed:
+        active_q = typed
+        st.session_state['pending_q'] = None
+    elif st.session_state.get('pending_q'):
+        active_q = st.session_state['pending_q']
+        st.session_state['pending_q'] = None
 
-    if active_question:
-        st.session_state['chat_history'].append({
-            'role': 'user', 'content': active_question
-        })
+    if active_q:
+        st.session_state['chat_history'].append(
+            {'role': 'user', 'content': active_q}
+        )
 
         with st.spinner("Analyzing..."):
-            # Build dynamic context from whatever columns exist
-            profile = get_data_profile(df, col_types)
 
-            # Compute aggregation tables dynamically
-            agg_tables = []
-            for cat in categorical_cols[:3]:
-                for num in numeric_cols[:2]:
-                    agg = (
-                        df.groupby(cat)[num]
-                        .agg(['sum', 'mean', 'count'])
-                        .round(2)
-                        .reset_index()
-                        .sort_values('sum', ascending=False)
-                        .head(10)
-                    )
-                    agg_tables.append(f"\n{num} by {cat}:\n{agg.to_string(index=False)}")
+            # Compute dynamic aggregations from real data
+            agg_text = []
+            for cat in cat_cols[:3]:
+                for num in num_cols[:2]:
+                    try:
+                        t = (
+                            df.groupby(cat)[num]
+                            .agg(['sum','mean','count'])
+                            .round(1)
+                            .reset_index()
+                            .sort_values('sum', ascending=False)
+                            .head(8)
+                            .to_string(index=False)
+                        )
+                        agg_text.append(f"{num} by {cat}:\n{t}")
+                    except:
+                        pass
 
-            agg_context = "\n".join(agg_tables[:4])  # max 4 tables
+            profile  = get_data_profile(df, col_types)
+            agg_data = "\n\n".join(agg_text[:4])
 
-            prompt = f"""
-            You are an expert data analyst. A user uploaded a dataset and is asking a question.
+            prompt = f"""You are an expert data analyst.
+A user uploaded a CSV dataset and is asking a question.
 
-            DATASET PROFILE:
-            {profile}
+DATASET PROFILE:
+{profile}
 
-            AGGREGATED DATA:
-            {agg_context}
+AGGREGATED DATA:
+{agg_data}
 
-            USER QUESTION: "{active_question}"
+USER QUESTION: "{active_q}"
 
-            Answer rules:
-            - First sentence: direct answer with the key number
-            - Support with 2-3 specific facts from the data above
-            - End with one actionable recommendation
-            - Under 100 words. No bullet points. Natural paragraph.
-            - Use actual column names and values from the data
-            - If numbers are large use K/L/Cr format
-            """
+Answer rules:
+- First sentence: direct answer with key number
+- 2-3 supporting facts from the data above
+- End with one actionable business recommendation
+- Under 100 words, no bullet points, natural paragraph
+- Use actual column names and values from the data"""
 
-            ai_answer = ask_gemini(prompt)
+            ai_answer = ask_ai(prompt)
 
-            # Generate chart for the answer dynamically
+            # Auto generate chart based on question
             chart = None
-            if numeric_cols and categorical_cols:
-                q_lower = active_question.lower()
-                # Find which categorical column the question is about
-                matched_cat = None
-                for cat in categorical_cols:
-                    if cat.lower() in q_lower:
-                        matched_cat = cat
-                        break
-                matched_cat = matched_cat or categorical_cols[0]
+            try:
+                if num_cols and cat_cols:
+                    q_low = active_q.lower()
 
-                # Find which numeric column the question is about
-                matched_num = None
-                for num in numeric_cols:
-                    if num.lower() in q_lower:
-                        matched_num = num
-                        break
-                matched_num = matched_num or numeric_cols[0]
+                    # Match mentioned category column
+                    m_cat = next(
+                        (c for c in cat_cols if c.lower() in q_low),
+                        cat_cols[0]
+                    )
+                    # Match mentioned numeric column
+                    m_num = next(
+                        (c for c in num_cols if c.lower() in q_low),
+                        num_cols[0]
+                    )
 
-                try:
-                    chart_df = (
-                        df.groupby(matched_cat)[matched_num]
+                    cd = (
+                        df.groupby(m_cat)[m_num]
                         .sum()
                         .reset_index()
-                        .sort_values(matched_num, ascending=False)
+                        .sort_values(m_num, ascending=False)
                         .head(10)
                     )
-                    chart = px.bar(
-                        chart_df,
-                        x=matched_cat, y=matched_num,
-                        color=matched_num,
-                        color_continuous_scale='Blues',
-                        title=f'{matched_num} by {matched_cat}',
-                        text_auto='.2s'
-                    )
-                    chart.update_layout(height=300, showlegend=False)
-                except:
-                    chart = None
+
+                    # Line chart if trend question
+                    if any(w in q_low for w in
+                           ['trend','over time','month','year','growth']):
+                        if col_types['datetime']:
+                            dc = col_types['datetime'][0]
+                            df_t = df.copy()
+                            df_t['_p'] = (
+                                df_t[dc].dt.to_period('M').astype(str)
+                            )
+                            cd = (
+                                df_t.groupby('_p')[m_num]
+                                .sum()
+                                .reset_index()
+                            )
+                            chart = px.line(
+                                cd, x='_p', y=m_num, markers=True,
+                                title=f'{m_num} Trend',
+                                color_discrete_sequence=['#6366f1']
+                            )
+                    else:
+                        chart = px.bar(
+                            cd,
+                            x=m_cat, y=m_num,
+                            color=m_num,
+                            color_continuous_scale='Blues',
+                            title=f'{m_num} by {m_cat}',
+                            text_auto='.2s'
+                        )
+
+                    if chart:
+                        chart.update_layout(
+                            height=300,
+                            showlegend=False,
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)'
+                        )
+            except:
+                chart = None
 
             # Follow-up suggestions
-            fu_prompt = f"""
-            User asked: "{active_question}" about a dataset with columns: {', '.join(df.columns.tolist())}
-            Suggest 3 short follow-up questions (numbered list, under 10 words each, no extra text):
-            """
-            fu_raw = ask_gemini(fu_prompt)
-            followups = []
-            for line in fu_raw.strip().splitlines():
-                line = line.strip()
-                if line and line[0].isdigit() and len(line) > 2:
-                    followups.append(line[2:].strip())
-            followups = followups[:3]
+            fu_raw = ask_ai(
+                f"The user asked: '{active_q}' about a dataset with "
+                f"columns: {', '.join(df.columns.tolist())}. "
+                f"Suggest 3 short follow-up questions (numbered list, "
+                f"under 10 words each, no extra text):"
+            )
+            followups = [
+                line[2:].strip()
+                for line in fu_raw.strip().splitlines()
+                if line.strip() and line.strip()[0].isdigit()
+                and len(line) > 2
+            ][:3]
 
-        st.session_state['chat_history'].append({'role': 'ai', 'content': ai_answer})
+        st.session_state['chat_history'].append(
+            {'role': 'ai', 'content': ai_answer}
+        )
         st.session_state['chart_history'].append(chart)
         st.session_state['followup_history'].append(followups)
 
-    # Display conversation
+    # ── DISPLAY CHAT HISTORY ──
     ai_idx = 0
     for msg in st.session_state['chat_history']:
         if msg['role'] == 'user':
@@ -702,25 +804,30 @@ def ai_chat_section(df, col_types):
                 f'<div class="chat-ai">🤖 AI Analyst: {msg["content"]}</div>',
                 unsafe_allow_html=True
             )
+            # Chart below AI answer
             if ai_idx < len(st.session_state['chart_history']):
-                chart = st.session_state['chart_history'][ai_idx]
-                if chart:
-                    st.plotly_chart(chart, use_container_width=True)
+                c = st.session_state['chart_history'][ai_idx]
+                if c:
+                    st.plotly_chart(c, use_container_width=True)
+
+            # Follow-up buttons
             if ai_idx < len(st.session_state['followup_history']):
                 fqs = st.session_state['followup_history'][ai_idx]
                 if fqs:
                     st.markdown("💡 *You might also ask:*")
-                    fu_cols = st.columns(len(fqs))
+                    fu_c = st.columns(len(fqs))
                     for j, fq in enumerate(fqs):
-                        if fu_cols[j].button(fq, key=f"fu_{ai_idx}_{j}",
-                                              use_container_width=True):
-                            st.session_state['pending_question'] = fq
+                        if fu_c[j].button(
+                            fq, key=f"fu_{ai_idx}_{j}",
+                            use_container_width=True
+                        ):
+                            st.session_state['pending_q'] = fq
                             st.rerun()
             ai_idx += 1
 
     if st.session_state['chat_history']:
         st.markdown("---")
-        if st.button("🗑️ Clear conversation"):
+        if st.button("🗑️ Clear conversation", key="clear"):
             st.session_state['chat_history']    = []
             st.session_state['chart_history']   = []
             st.session_state['followup_history'] = []
@@ -728,108 +835,102 @@ def ai_chat_section(df, col_types):
 
 
 # ============================================================
-# COLUMN EXPLORER — shows user what columns were detected
-# This is a transparency feature — user knows what the app found
-# ============================================================
-def show_column_explorer(df, col_types):
-    with st.expander("🔍 Column Analysis — What the app detected in your data"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("**📊 Numeric Columns**")
-            for col in col_types['numeric']:
-                st.markdown(
-                    f'<span class="col-badge" style="background:#dbeafe;color:#1e40af">'
-                    f'{col}</span>', unsafe_allow_html=True
-                )
-        with c2:
-            st.markdown("**🏷️ Category Columns**")
-            for col in col_types['categorical']:
-                st.markdown(
-                    f'<span class="col-badge" style="background:#dcfce7;color:#166534">'
-                    f'{col}</span>', unsafe_allow_html=True
-                )
-        with c3:
-            st.markdown("**📅 Date Columns**")
-            for col in col_types['datetime']:
-                st.markdown(
-                    f'<span class="col-badge" style="background:#fef9c3;color:#854d0e">'
-                    f'{col}</span>', unsafe_allow_html=True
-                )
-        st.dataframe(df.head(5), use_container_width=True)
-        st.caption(f"Showing first 5 of {len(df):,} rows")
-
-
-# ============================================================
 # MAIN
 # ============================================================
 def main():
     st.title("📊 AI Data Analyst")
-    st.caption("Upload any CSV — get instant AI-powered insights, charts, and Q&A")
+    st.caption(
+        "Upload **any** CSV file — get instant KPIs, charts & AI insights"
+    )
 
+    # ── SIDEBAR ──────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### 📂 Upload Your Data")
+        st.markdown("### 📂 Upload Data")
         uploaded_file = st.file_uploader(
             "Upload any CSV file",
             type=['csv'],
-            help="Works with sales, HR, finance, marketing, or any dataset"
+            help="Works with sales, HR, finance, marketing data — any CSV"
         )
 
         if uploaded_file is not None:
-            df_raw = load_data(uploaded_file)
+            df_raw    = load_data(uploaded_file)
             col_types = detect_columns(df_raw)
 
             st.markdown("---")
             st.markdown("### 🔽 Filters")
 
-            # Dynamically build filters for all categorical columns
-            # We don't know which columns exist in advance
+            # Build filters dynamically from categorical columns
             selected_filters = {}
-            for cat_col in col_types['categorical'][:4]:  # max 4 filters
-                options = sorted(df_raw[cat_col].dropna().unique().tolist())
-                selected = st.multiselect(
-                    f"🏷️ {cat_col}",
-                    options=options,
-                    default=options,
-                    key=f"filter_{cat_col}"
+            for cat in col_types['categorical'][:4]:
+                opts = sorted(df_raw[cat].dropna().unique().tolist())
+                sel  = st.multiselect(
+                    f"🏷️ {cat}", options=opts, default=opts,
+                    key=f"f_{cat}"
                 )
-                selected_filters[cat_col] = selected
+                selected_filters[cat] = sel
 
             st.markdown("---")
             st.info(
-                f"Rows: {len(df_raw):,}\n"
-                f"Columns: {len(df_raw.columns)}\n"
-                f"Numeric: {len(col_types['numeric'])}\n"
-                f"Categories: {len(col_types['categorical'])}\n"
-                f"Dates: {len(col_types['datetime'])}"
+                f"📋 Rows: {len(df_raw):,}\n"
+                f"📐 Columns: {len(df_raw.columns)}\n"
+                f"🔢 Numeric: {len(col_types['numeric'])}\n"
+                f"🏷️ Categories: {len(col_types['categorical'])}\n"
+                f"📅 Dates: {len(col_types['datetime'])}"
             )
 
+    # ── WELCOME SCREEN ────────────────────────────────────
     if uploaded_file is None:
         st.markdown("---")
         st.info("👈 Upload any CSV file from the sidebar to get started")
+
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.success("**Works with any CSV**\nSales, HR, Finance, Marketing...")
+            st.success(
+                "**Works with any CSV**\n\n"
+                "Sales · HR · Finance\n"
+                "Marketing · Operations"
+            )
         with c2:
-            st.success("**Auto-detects columns**\nNo setup or configuration needed")
+            st.success(
+                "**Auto-detects columns**\n\n"
+                "Numbers · Categories\n"
+                "Dates · all handled"
+            )
         with c3:
-            st.success("**Ask any question**\nIn plain English about your data")
+            st.success(
+                "**Ask in plain English**\n\n"
+                "\"Which region is best?\"\n"
+                "\"Show me the trend\""
+            )
 
         st.markdown("---")
-        st.markdown("#### 📁 Sample datasets you can try:")
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1:
-            st.info("**Sales Data**\nOrders, Revenue, Region, Product")
-        with sc2:
-            st.info("**HR Data**\nEmployees, Department, Salary, Tenure")
-        with sc3:
-            st.info("**Finance Data**\nExpenses, Category, Budget, Actual")
+        st.markdown("#### 📁 Sample CSVs to try:")
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            st.info(
+                "**Sales Data**\n"
+                "Order_Date, Region, Category\n"
+                "Sales, Profit, Discount"
+            )
+        with s2:
+            st.info(
+                "**HR Data**\n"
+                "Department, Role, Gender\n"
+                "Salary, Experience, Rating"
+            )
+        with s3:
+            st.info(
+                "**Finance Data**\n"
+                "Month, Category, Budget\n"
+                "Actual, Variance"
+            )
         return
 
-    # Apply all dynamic filters
+    # ── APPLY FILTERS ─────────────────────────────────────
     df = df_raw.copy()
-    for cat_col, selected_vals in selected_filters.items():
-        if selected_vals:
-            df = df[df[cat_col].isin(selected_vals)]
+    for cat, selected in selected_filters.items():
+        if selected:
+            df = df[df[cat].isin(selected)]
 
     col_types = detect_columns(df)
 
@@ -838,10 +939,11 @@ def main():
         return
 
     st.caption(
-        f"Analyzing **{len(df):,}** rows × **{len(df.columns)}** columns | "
-        f"Filtered from {len(df_raw):,} total rows"
+        f"Showing **{len(df):,}** rows × **{len(df.columns)}** columns "
+        f"| Filtered from {len(df_raw):,} total rows"
     )
 
+    # ── RUN ALL SECTIONS ──────────────────────────────────
     show_column_explorer(df, col_types)
     st.markdown("---")
     generate_kpi_cards(df, col_types)
@@ -852,7 +954,10 @@ def main():
     st.markdown("---")
     ai_chat_section(df, col_types)
     st.markdown("---")
-    st.caption("Built with Streamlit · Pandas · Plotly · Google Gemini AI · Works on any CSV")
+    st.caption(
+        "Built with Streamlit · Pandas · Plotly · "
+        "Groq LLaMA 3.3 70B · Works on any CSV"
+    )
 
 
 if __name__ == "__main__":
