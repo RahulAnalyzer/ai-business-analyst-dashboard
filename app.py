@@ -15,14 +15,14 @@ import pandas as pd
 import plotly.express as px
 from dotenv import load_dotenv
 import os
-from google import genai
+from groq import Groq
 
 # ── SETUP ──────────────────────────────────────────────────
 load_dotenv()
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+client = Groq(
+    api_key=os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 )
-MODEL = "gemini-2.0-flash-001"
+MODEL = "llama-3.3-70b-versatile"
 
 st.set_page_config(
     page_title="AI Data Analyst",
@@ -90,11 +90,12 @@ st.markdown("""
 @st.cache_data(ttl=600, show_spinner=False)
 def ask_gemini(prompt):
     try:
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=MODEL,
-            contents=prompt
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500
         )
-        return response.text
+        return response.choices[0].message.content
     except Exception as e:
         return f"AI temporarily unavailable: {str(e)}"
 
