@@ -117,6 +117,17 @@ def ask_ai(prompt):
 #   like "Product Name" from being misclassified as dates.
 # ============================================================
 def detect_columns(df):
+    """
+    Smarter column detection that handles any CSV type:
+    - Medical data (MIMIC), Sales data, HR data, Finance data etc.
+    
+    KEY FIXES vs old version:
+    1. Numeric columns with FEW unique values → also treated as categorical
+       (e.g. age groups 0-10, score 1-5, rating 1-3)
+    2. Text columns are checked more generously for categorical
+       (relaxed from ratio<0.5 to ratio<0.8)
+    3. Numeric columns that look like IDs (patient_id, order_id) are skipped
+    """
     cols = {
         'numeric'    : [],
         'categorical': [],
@@ -124,46 +135,73 @@ def detect_columns(df):
         'text'       : [],
     }
 
+    total_rows = len(df)
+
     for col in df.columns:
         series = df[col].dropna()
-
         if len(series) == 0:
             continue
 
-        # 1. Already datetime type → date
+        col_lower = col.lower()
+
+        # ── SKIP ID-like columns ──────────────────────────
+        # Columns named like "id", "patient_id", "order_id" are identifiers
+        # They're not useful for analysis or filters
+        if any(id_kw in col_lower for id_kw in
+               ['_id', 'id_', ' id', 'index', 'row_num']):
+            cols['text'].append(col)
+            continue
+
+        # ── DATETIME DETECTION ────────────────────────────
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             cols['datetime'].append(col)
             continue
 
-        # 2. Numeric type → numeric
-        if pd.api.types.is_numeric_dtype(df[col]):
-            cols['numeric'].append(col)
-            continue
-
-        # 3. Object column — figure out what it really is
         if df[col].dtype == object:
-
-            # Try date parsing — only accept if 80%+ of values parse
-            # This prevents false positives like "North" being a date
             try:
-                parsed = pd.to_datetime(series, infer_datetime_format=True, errors='coerce')
-                success_rate = parsed.notna().mean()
-                if success_rate >= 0.8:
+                parsed = pd.to_datetime(
+                    series, infer_datetime_format=True, errors='coerce'
+                )
+                if parsed.notna().mean() >= 0.8:
                     cols['datetime'].append(col)
                     continue
             except:
                 pass
 
-            # Categorical: text with 30 or fewer unique values
+        # ── NUMERIC COLUMNS ───────────────────────────────
+        if pd.api.types.is_numeric_dtype(df[col]):
             unique_count = series.nunique()
-            ratio = unique_count / len(series)  # uniqueness ratio
 
-            # Low ratio = many repeats = categorical (Region, Status, Category)
-            # High ratio = mostly unique = text (Name, ID, Description)
-            if unique_count <= 50 and ratio < 0.5:
+            # Numeric with very few unique values = likely a category
+            # Examples: gender (0/1), rating (1-5), grade (1-4)
+            # Threshold: if fewer than 15 unique values → categorical too
+            if unique_count <= 15:
+                cols['categorical'].append(col)
+                # Also keep in numeric for KPI calculations
+                cols['numeric'].append(col)
+            else:
+                cols['numeric'].append(col)
+            continue
+
+        # ── OBJECT COLUMNS → CATEGORICAL or TEXT ─────────
+        if df[col].dtype == object:
+            unique_count = series.nunique()
+            # ratio = how unique is this column (0=all same, 1=all unique)
+            ratio = unique_count / total_rows
+
+            # GENEROUS categorical check:
+            # - Fewer than 100 unique values, OR
+            # - Less than 80% unique (lots of repeats = category)
+            if unique_count <= 100 or ratio < 0.8:
                 cols['categorical'].append(col)
             else:
                 cols['text'].append(col)
+
+    # Remove duplicates while preserving order
+    for key in cols:
+        seen = set()
+        cols[key] = [x for x in cols[key]
+                     if not (x in seen or seen.add(x))]
 
     return cols
 
@@ -337,14 +375,24 @@ def show_charts(df, col_types):
         st.warning("No numeric columns detected — cannot generate charts.")
         return
 
-    # Pick the best columns to use
-    # Strategy: use column with highest total value as primary metric
-    primary_num = max(num_cols, key=lambda c: df[c].sum()) \
-                  if num_cols else None
-    second_num  = [c for c in num_cols if c != primary_num][0] \
-                  if len(num_cols) > 1 else None
-    primary_cat = cat_cols[0] if cat_cols else None
-    second_cat  = cat_cols[1] if len(cat_cols) > 1 else None
+    # Pick best columns for visualization
+    # primary_num = numeric col with most unique values (most interesting to chart)
+    # Excludes cols that are ALSO categorical (those are better as filters)
+    pure_numeric = [c for c in num_cols if c not in cat_cols]
+    chart_numeric = pure_numeric if pure_numeric else num_cols
+
+    primary_num = max(chart_numeric, key=lambda c: df[c].nunique()) \
+                  if chart_numeric else None
+    second_num  = [c for c in chart_numeric if c != primary_num][0] \
+                  if len(chart_numeric) > 1 else None
+
+    # For categories: prefer text-type categoricals over numeric-turned-categorical
+    text_cats = [c for c in cat_cols if df[c].dtype == object]
+    num_cats  = [c for c in cat_cols if c not in text_cats]
+
+    all_cats   = text_cats + num_cats   # text categories first
+    primary_cat = all_cats[0] if all_cats else None
+    second_cat  = all_cats[1] if len(all_cats) > 1 else None
     date_col    = date_cols[0] if date_cols else None
 
     # ── ROW 1 ──────────────────────────────────────────────
@@ -859,15 +907,45 @@ def main():
             st.markdown("---")
             st.markdown("### 🔽 Filters")
 
-            # Build filters dynamically from categorical columns
             selected_filters = {}
-            for cat in col_types['categorical'][:4]:
-                opts = sorted(df_raw[cat].dropna().unique().tolist())
-                sel  = st.multiselect(
-                    f"🏷️ {cat}", options=opts, default=opts,
-                    key=f"f_{cat}"
+
+            # Build filter list — prioritise text categoricals first,
+            # then add numeric-based categoricals (few unique values)
+            # This ensures filters always appear for any dataset type
+            text_cat_cols = [
+                c for c in col_types['categorical']
+                if df_raw[c].dtype == object
+            ]
+            num_cat_cols = [
+                c for c in col_types['categorical']
+                if df_raw[c].dtype != object
+                and df_raw[c].nunique() <= 15
+            ]
+            filter_cols = (text_cat_cols + num_cat_cols)[:6]
+
+            if filter_cols:
+                for cat in filter_cols:
+                    # Convert values to string for display
+                    raw_opts = sorted(
+                        df_raw[cat].dropna().unique().tolist()
+                    )
+                    str_opts = [str(o) for o in raw_opts]
+                    sel = st.multiselect(
+                        f"🏷️ {cat}",
+                        options=str_opts,
+                        default=str_opts,
+                        key=f"f_{cat}"
+                    )
+                    selected_filters[cat] = {
+                        'selected': sel,
+                        'original': raw_opts
+                    }
+            else:
+                st.info(
+                    "No filterable columns detected.\n"
+                    "Filters appear for columns with repeated values "
+                    "(like Region, Category, Status)."
                 )
-                selected_filters[cat] = sel
 
             st.markdown("---")
             st.info(
@@ -928,9 +1006,22 @@ def main():
 
     # ── APPLY FILTERS ─────────────────────────────────────
     df = df_raw.copy()
-    for cat, selected in selected_filters.items():
-        if selected:
-            df = df[df[cat].isin(selected)]
+    for cat, filter_data in selected_filters.items():
+        selected_str = filter_data['selected']
+        original     = filter_data['original']
+        if selected_str and len(selected_str) < len(original):
+            # Convert selected strings back to original dtype for filtering
+            try:
+                dtype = df[cat].dtype
+                if pd.api.types.is_numeric_dtype(dtype):
+                    selected_vals = [
+                        pd.to_numeric(v) for v in selected_str
+                    ]
+                else:
+                    selected_vals = selected_str
+                df = df[df[cat].isin(selected_vals)]
+            except:
+                pass  # if conversion fails, skip this filter
 
     col_types = detect_columns(df)
 
