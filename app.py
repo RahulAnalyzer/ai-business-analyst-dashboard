@@ -17,6 +17,13 @@ from dotenv import load_dotenv
 import os
 from groq import Groq
 
+# PDF export module — save pdf_export.py in same folder as app.py
+try:
+    from pdf_export import generate_pdf_report
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
 # ── SETUP ──────────────────────────────────────────────────
 load_dotenv()
 client = Groq(
@@ -342,6 +349,8 @@ Rules: Flowing paragraph, NO bullet points. Under 120 words.
 Be specific — use actual column names and values from the data."""
 
         ai_text = ask_ai(prompt)
+        # Save to session state so PDF export can use it without extra API call
+        st.session_state['last_ai_summary'] = ai_text
         st.markdown(
             f'<div class="insight-box">{ai_text}</div>',
             unsafe_allow_html=True
@@ -1044,6 +1053,54 @@ def main():
     show_charts(df, col_types)
     st.markdown("---")
     ai_chat_section(df, col_types)
+    # ── PDF EXPORT ─────────────────────────────────────
+    st.markdown("---")
+    st.markdown('<p class="section-title">📄 Export Report</p>',
+                unsafe_allow_html=True)
+
+    col_exp1, col_exp2 = st.columns([2, 3])
+
+    with col_exp1:
+        if PDF_AVAILABLE:
+            generate_clicked = st.button(
+                "📥 Generate PDF Report",
+                use_container_width=True,
+                type="primary",
+                help="Exports KPIs, charts, AI summary as a PDF"
+            )
+            if generate_clicked:
+                ai_text = st.session_state.get('last_ai_summary', '')
+                with st.spinner("Building your PDF report..."):
+                    try:
+                        pdf_bytes = generate_pdf_report(
+                            df=df,
+                            col_types=col_types,
+                            ai_summary=ai_text,
+                        )
+                        st.download_button(
+                            label="⬇️ Click to save PDF",
+                            data=pdf_bytes,
+                            file_name=f"report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                        st.success("PDF ready! Click the button above.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        else:
+            st.warning(
+                "PDF export unavailable. "
+                "Ensure pdf_export.py is in the same folder as app.py."
+            )
+
+    with col_exp2:
+        st.info(
+            "**The PDF report includes:**\n"
+            "Page 1: Dataset overview + KPIs + AI summary + stats table\n"
+            "Page 2: 4 business charts\n"
+            "Page 3: First 20 rows data sample"
+        )
+
     st.markdown("---")
     st.caption(
         "Built with Streamlit · Pandas · Plotly · "
