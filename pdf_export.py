@@ -312,16 +312,18 @@ def fig_to_bytes(fig):
 
 
 # ── MAIN PDF BUILDER ────────────────────────────────────────
-def generate_pdf_report(df, col_types, ai_summary, filename="analysis_report"):
+def generate_pdf_report(df, col_types, ai_summary,
+                        chat_history=None, filename="analysis_report"):
     """
     Main function called from app.py.
     Returns PDF as bytes — plug into st.download_button().
 
     Parameters:
-        df          : filtered DataFrame (what user sees on screen)
-        col_types   : dict from detect_columns()
-        ai_summary  : string — the AI executive summary text
-        filename    : base name for the downloaded file
+        df           : filtered DataFrame (what user sees on screen)
+        col_types    : dict from detect_columns()
+        ai_summary   : string — the AI executive summary text
+        chat_history : list of dicts [{"role": "user"/"ai", "content": "..."}]
+        filename     : base name for the downloaded file
 
     Returns:
         bytes — the complete PDF file
@@ -434,45 +436,141 @@ def generate_pdf_report(df, col_types, ai_summary, filename="analysis_report"):
         story.append(Paragraph("Key Performance Indicators", styles['section']))
 
         show_cols = num_cols[:4]
-        kpi_cells = []
+
+        # Build KPI table: each row = [Label, Value, Label, Value]
+        # 2 KPIs per row, clean 4-column layout
+        kpi_header = []
+        kpi_values = []
+
         for col in show_cols:
             total = df[col].sum()
             avg   = df[col].mean()
-            kpi_cells.append([
-                Paragraph(col, styles['kpi_label']),
-                Paragraph(format_number(total), styles['kpi_value']),
-                Paragraph(f"Avg: {format_number(avg)}", styles['kpi_label']),
-            ])
-
-        # Arrange KPIs in a 2-column grid
-        kpi_rows = []
-        for i in range(0, len(kpi_cells), 2):
-            row_left  = kpi_cells[i]
-            row_right = kpi_cells[i+1] if i+1 < len(kpi_cells) else ['','','']
-
-            # Build 2-cell row with a divider column in between
-            kpi_rows.append([
-                Table([row_left],  colWidths=[W*0.45]),
-                Spacer(0.1*cm, 0),
-                Table([row_right], colWidths=[W*0.45]),
-            ])
-
-        for kpi_row in kpi_rows:
-            row_table = Table(
-                [kpi_row],
-                colWidths=[W*0.47, W*0.06, W*0.47]
+            kpi_header.append(
+                Paragraph(col, styles['kpi_label'])
             )
-            row_table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (0,0), LIGHT_BLUE),
-                ('BACKGROUND', (2,0), (2,0), LIGHT_BLUE),
-                ('ROUNDEDCORNERS', [6]),
-                ('TOPPADDING', (0,0), (-1,-1), 8),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-                ('LEFTPADDING', (0,0), (-1,-1), 6),
-                ('RIGHTPADDING', (0,0), (-1,-1), 6),
-            ]))
-            story.append(row_table)
-            story.append(Spacer(1, 0.2*cm))
+            kpi_values.append(
+                Paragraph(
+                    f"{format_number(total)}",
+                    styles['kpi_value']
+                )
+            )
+            kpi_values_sub = f"Avg: {format_number(avg)}"
+
+        # Pad to even number of columns
+        while len(kpi_header) % 2 != 0:
+            kpi_header.append(Paragraph('', styles['kpi_label']))
+            kpi_values.append(Paragraph('', styles['kpi_value']))
+
+        # Build rows: 2 KPIs per row
+        kpi_table_data = []
+        for i in range(0, len(show_cols), 2):
+            col_a = show_cols[i]
+            col_b = show_cols[i+1] if i+1 < len(show_cols) else None
+
+            total_a = df[col_a].sum()
+            avg_a   = df[col_a].mean()
+
+            if col_b:
+                total_b = df[col_b].sum()
+                avg_b   = df[col_b].mean()
+                kpi_table_data.append([
+                    Paragraph(f"<b>{col_a}</b>", styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph(f"<b>{col_b}</b>", styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                ])
+                kpi_table_data.append([
+                    Paragraph(format_number(total_a), styles['kpi_value']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph(format_number(total_b), styles['kpi_value']),
+                    Paragraph('', styles['kpi_label']),
+                ])
+                kpi_table_data.append([
+                    Paragraph(f"Avg: {format_number(avg_a)}", styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph(f"Avg: {format_number(avg_b)}", styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                ])
+            else:
+                kpi_table_data.append([
+                    Paragraph(f"<b>{col_a}</b>", styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                ])
+                kpi_table_data.append([
+                    Paragraph(format_number(total_a), styles['kpi_value']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                ])
+                kpi_table_data.append([
+                    Paragraph(f"Avg: {format_number(avg_a)}", styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                    Paragraph('', styles['kpi_label']),
+                ])
+
+            # Spacer row between KPI pairs
+            kpi_table_data.append([
+                Paragraph('', styles['kpi_label']),
+                Paragraph('', styles['kpi_label']),
+                Paragraph('', styles['kpi_label']),
+                Paragraph('', styles['kpi_label']),
+            ])
+
+        col_w4 = W / 4
+        kpi_tbl = Table(
+            kpi_table_data,
+            colWidths=[W*0.45, W*0.05, W*0.45, W*0.05]
+        )
+
+        # Style: blue background for label rows, white for value rows
+        kpi_style = [
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('TOPPADDING', (0,0), (-1,-1), 3),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+            ('LEFTPADDING', (0,0), (-1,-1), 8),
+            ('RIGHTPADDING', (0,0), (-1,-1), 8),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ]
+        # Apply background to each group of 3 rows (label+value+avg)
+        num_groups = (len(show_cols) + 1) // 2
+        for g in range(num_groups):
+            base = g * 4  # 3 data rows + 1 spacer row
+            # label row
+            kpi_style.append(
+                ('BACKGROUND', (0, base), (0, base), LIGHT_BLUE)
+            )
+            kpi_style.append(
+                ('BACKGROUND', (2, base), (2, base), LIGHT_BLUE)
+            )
+            # value row
+            kpi_style.append(
+                ('BACKGROUND', (0, base+1), (0, base+1), LIGHT_BLUE)
+            )
+            kpi_style.append(
+                ('BACKGROUND', (2, base+1), (2, base+1), LIGHT_BLUE)
+            )
+            # avg row
+            kpi_style.append(
+                ('BACKGROUND', (0, base+2), (0, base+2), LIGHT_BLUE)
+            )
+            kpi_style.append(
+                ('BACKGROUND', (2, base+2), (2, base+2), LIGHT_BLUE)
+            )
+            # bottom border under each card
+            kpi_style.append(
+                ('LINEBELOW', (0, base+2), (0, base+2), 1, MID_BLUE)
+            )
+            kpi_style.append(
+                ('LINEBELOW', (2, base+2), (2, base+2), 1, MID_BLUE)
+            )
+
+        kpi_tbl.setStyle(TableStyle(kpi_style))
+        story.append(kpi_tbl)
+        story.append(Spacer(1, 0.3*cm))
 
     # ── AI EXECUTIVE SUMMARY ────────────────────────────────
     story.append(Paragraph("AI Executive Summary", styles['section']))
@@ -604,7 +702,91 @@ def generate_pdf_report(df, col_types, ai_summary, filename="analysis_report"):
             styles['body']
         ))
 
-    # ── PAGE 3: DATA SAMPLE ─────────────────────────────────
+    # ── PAGE 3: CHAT Q&A HISTORY ────────────────────────────
+    if chat_history and len(chat_history) > 0:
+        story.append(PageBreak())
+        story.append(Paragraph("Chat Analysis — Questions & Answers",
+                                styles['section']))
+        story.append(HRFlowable(
+            width=W, thickness=1,
+            color=GREY_MID, spaceAfter=8
+        ))
+        story.append(Paragraph(
+            "The following questions were asked during this analysis session:",
+            styles['body']
+        ))
+        story.append(Spacer(1, 0.2*cm))
+
+        # Walk through chat history in user/ai pairs
+        qa_num = 1
+        i = 0
+        while i < len(chat_history):
+            msg = chat_history[i]
+
+            if msg['role'] == 'user':
+                q_text = msg['content']
+
+                # Look for the AI response right after
+                ai_text_qa = ''
+                if i + 1 < len(chat_history) and chat_history[i+1]['role'] == 'ai':
+                    ai_text_qa = chat_history[i+1]['content']
+                    i += 2
+                else:
+                    i += 1
+
+                # Question row — dark blue background
+                q_data = [[
+                    Paragraph(f"Q{qa_num}.", styles['kpi_label']),
+                    Paragraph(q_text, styles['body']),
+                ]]
+                q_table = Table(q_data, colWidths=[0.6*cm, W - 0.6*cm])
+                q_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,-1), LIGHT_BLUE),
+                    ('TOPPADDING', (0,0), (-1,-1), 6),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                    ('LEFTPADDING', (0,0), (-1,-1), 8),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 8),
+                    ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,-1), 9),
+                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                ]))
+                story.append(q_table)
+
+                # Answer row — green background
+                if ai_text_qa:
+                    clean_ans = ai_text_qa.replace('**','').replace('*','')
+                    a_data = [[
+                        Paragraph("AI", styles['kpi_label']),
+                        Paragraph(clean_ans, styles['insight']),
+                    ]]
+                    a_table = Table(a_data, colWidths=[0.6*cm, W - 0.6*cm])
+                    a_table.setStyle(TableStyle([
+                        ('BACKGROUND', (0,0), (-1,-1), LIGHT_GREEN),
+                        ('TOPPADDING', (0,0), (-1,-1), 6),
+                        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+                        ('LEFTPADDING', (0,0), (-1,-1), 8),
+                        ('RIGHTPADDING', (0,0), (-1,-1), 8),
+                        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
+                        ('FONTSIZE', (0,0), (-1,-1), 9),
+                        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                        ('LINEAFTER', (0,0), (0,-1), 2,
+                         colors.HexColor('#22c55e')),
+                    ]))
+                    story.append(a_table)
+
+                story.append(Spacer(1, 0.25*cm))
+                qa_num += 1
+
+            else:
+                i += 1
+
+        if qa_num == 1:
+            story.append(Paragraph(
+                "No questions were asked in this session.",
+                styles['body']
+            ))
+
+    # ── PAGE 4: DATA SAMPLE ─────────────────────────────────
     story.append(PageBreak())
     story.append(Paragraph("Data Sample (First 20 Rows)", styles['section']))
     story.append(HRFlowable(

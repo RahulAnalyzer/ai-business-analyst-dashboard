@@ -1072,10 +1072,13 @@ def main():
                 ai_text = st.session_state.get('last_ai_summary', '')
                 with st.spinner("Building your PDF report..."):
                     try:
+                        # Pass chat history so Q&A appears in PDF
+                        chat_hist = st.session_state.get('chat_history', [])
                         pdf_bytes = generate_pdf_report(
                             df=df,
                             col_types=col_types,
                             ai_summary=ai_text,
+                            chat_history=chat_hist,
                         )
                         st.download_button(
                             label="⬇️ Click to save PDF",
