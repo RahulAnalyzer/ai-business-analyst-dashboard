@@ -132,12 +132,14 @@ def show_missing_section(df, ask_ai_fn):
 
     # ── Detail table ──
     with st.expander("📋 Full Missing Values Table"):
-        st.dataframe(
-            missing_summary.style.background_gradient(
+        # background_gradient works fine — just ensure numeric column
+        try:
+            styled_miss = missing_summary.style.background_gradient(
                 subset=['Missing %'], cmap='Reds'
-            ),
-            use_container_width=True
-        )
+            )
+            st.dataframe(styled_miss, use_container_width=True)
+        except Exception:
+            st.dataframe(missing_summary, use_container_width=True)
 
     # ── AI Recommendation ──
     with st.spinner("AI analyzing missing values..."):
@@ -436,12 +438,13 @@ def show_outliers_section(df, col_types, ask_ai_fn):
 
     # ── Detailed outlier table ──
     with st.expander("📋 Full Outlier Statistics Table"):
-        st.dataframe(
-            results_df.style.background_gradient(
+        try:
+            styled_out = results_df.style.background_gradient(
                 subset=['Outlier %'], cmap='Oranges'
-            ),
-            use_container_width=True
-        )
+            )
+            st.dataframe(styled_out, use_container_width=True)
+        except Exception:
+            st.dataframe(results_df, use_container_width=True)
         st.caption(
             "IQR Method: Values below Q1-1.5×IQR or "
             "above Q3+1.5×IQR are flagged as outliers."
@@ -595,9 +598,16 @@ def show_dtype_section(df, col_types):
         }
         return colors.get(val, '')
 
-    styled = dtype_df.style.applymap(
-        color_type, subset=['Detected As']
-    )
+    # applymap was renamed to map in pandas 2.1+
+    # We use a safe wrapper that works on both versions
+    try:
+        styled = dtype_df.style.map(
+            color_type, subset=['Detected As']
+        )
+    except AttributeError:
+        styled = dtype_df.style.applymap(
+            color_type, subset=['Detected As']
+        )
     st.dataframe(styled, use_container_width=True, height=300)
 
     # Legend
