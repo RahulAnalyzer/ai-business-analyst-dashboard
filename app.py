@@ -17,12 +17,19 @@ from dotenv import load_dotenv
 import os
 from groq import Groq
 
-# PDF export module — save pdf_export.py in same folder as app.py
+# PDF export module
 try:
     from pdf_export import generate_pdf_report
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
+
+# Data Quality module
+try:
+    from data_quality import show_data_quality_report
+    DQ_AVAILABLE = True
+except ImportError:
+    DQ_AVAILABLE = False
 
 # ── SETUP ──────────────────────────────────────────────────
 load_dotenv()
@@ -1051,6 +1058,10 @@ def main():
     generate_ai_summary(df, col_types)
     st.markdown("---")
     show_charts(df, col_types)
+    st.markdown("---")
+    # ── DATA QUALITY REPORT ──────────────────────────────
+    if DQ_AVAILABLE:
+        show_data_quality_report(df, col_types, ask_ai)
     st.markdown("---")
     ai_chat_section(df, col_types)
     # ── PDF EXPORT ─────────────────────────────────────
